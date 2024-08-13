@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -174,54 +175,132 @@ func getFlash(w http.ResponseWriter, r *http.Request, key string) string {
 }
 
 func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, error) {
-	var posts []Post
+	//var posts []Post
+	// POSTのID一覧を作成。
+	var postIds []int
+	var userIds []int
+	for i, result := range results {
+		postIds[i] = result.ID
+		userIds[i] = result.UserID
+	}
 
-	for _, p := range results {
-		err := db.Get(&p.CommentCount, "SELECT COUNT(*) AS `count` FROM `comments` WHERE `post_id` = ?", p.ID)
-		if err != nil {
-			return nil, err
-		}
+	// for _, p := range results {
+	// err := db.Get(&p.CommentCount, "SELECT COUNT(*) AS `count` FROM `comments` WHERE `post_id` = ?", p.ID)
+	// if err != nil {
+	// 	return nil, err
+	// }
 
-		query := "SELECT * FROM `comments` WHERE `post_id` = ? ORDER BY `created_at` DESC"
-		if !allComments {
-			query += " LIMIT 3"
-		}
-		var comments []Comment
-		err = db.Select(&comments, query, p.ID)
-		if err != nil {
-			return nil, err
-		}
+	// query := "SELECT * FROM `comments` WHERE `post_id` = ? ORDER BY `created_at` DESC"
+	// if !allComments {
+	// 	query += " LIMIT 3"
+	// }
 
-		for i := 0; i < len(comments); i++ {
-			err := db.Get(&comments[i].User, "SELECT * FROM `users` WHERE `id` = ?", comments[i].UserID)
-			if err != nil {
-				return nil, err
+	//INでコメントを取得（コメント）
+	query := "SELECT * FROM `comments` WHERE id IN (?)"
+	query, args, err := sqlx.In(query, postIds)
+	if err != nil {
+		log.Fatal(err)
+	}
+	query = db.Rebind(query)
+	var comments []Comment
+	err = db.Select(&comments, query, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	//INでコメントを取得（ユーザー）
+	query2 := "SELECT * FROM `users` WHERE id IN (?)"
+	query2, args2, err := sqlx.In(query2, userIds)
+	if err != nil {
+		log.Fatal(err)
+	}
+	query2 = db.Rebind(query2)
+	var users []User
+	err = db.Select(&users, query2, args2...)
+	if err != nil {
+		return nil, err
+	}
+
+	//各ポストに紐づくcommentの数を計測し、ポストのCommentCountに格納する
+	for _, result := range results {
+		//ユーザーとポストの紐づけ処理
+		for _, user := range users {
+			if user.ID == result.UserID {
+				result.User = user
+				break
+			}
+		}
+		count := 0
+		var tmpComments []Comment
+		for _, comment := range comments {
+			if comment.PostID == result.ID {
+				//ユーザーとコメントの紐づけ処理
+				for _, user := range users {
+					if user.ID == result.UserID {
+						result.User = user
+						comment.User = user
+						break
+					}
+				}
+				//ポストとコメントの紐づけ準備
+				count++
+				tmpComments = append(tmpComments, comment)
 			}
 		}
 
-		// reverse
-		for i, j := 0, len(comments)-1; i < j; i, j = i+1, j-1 {
-			comments[i], comments[j] = comments[j], comments[i]
-		}
+		//コメントを降順にする（DESCの代わり）
+		sort.Slice(tmpComments, func(i, j int) bool {
+			return tmpComments[i].CreatedAt.After(tmpComments[j].CreatedAt)
+		})
 
-		p.Comments = comments
-
-		err = db.Get(&p.User, "SELECT * FROM `users` WHERE `id` = ?", p.UserID)
-		if err != nil {
-			return nil, err
+		//allCommentsがfalseの場合は、postに対応するコメントは3件まで。
+		if !allComments {
+			if len(tmpComments) > 3 {
+				tmpComments = tmpComments[0:3]
+			}
 		}
+		//ポストとコメントの紐づけ
+		result.CommentCount = count
+		result.Comments = tmpComments
+		result.CSRFToken = csrfToken
 
-		p.CSRFToken = csrfToken
-
-		if p.User.DelFlg == 0 {
-			posts = append(posts, p)
-		}
-		if len(posts) >= postsPerPage {
-			break
-		}
 	}
 
-	return posts, nil
+	// err = db.Select(&comments, query, p.ID)
+	// if err != nil {
+	// 	return nil, err
+	// }
+
+	// for i := 0; i < len(comments); i++ {
+	// 	err := db.Get(&comments[i].User, "SELECT * FROM `users` WHERE `id` = ?", comments[i].UserID)
+	// 	if err != nil {
+	// 		return nil, err
+	// 	}
+	// }
+
+	// // reverse
+	// for i, j := 0, len(comments)-1; i < j; i, j = i+1, j-1 {
+	// 	comments[i], comments[j] = comments[j], comments[i]
+	// }
+
+	// p.Comments = comments
+
+	// err = db.Get(&p.User, "SELECT * FROM `users` WHERE `id` = ?", p.UserID)
+	// if err != nil {
+	// 	return nil, err
+	// }
+
+	// //p.CSRFToken = csrfToken
+
+	// if p.User.DelFlg == 0 {
+	// 	posts = append(posts, p)
+	// }
+	// if len(posts) >= postsPerPage {
+	// 	break
+	// }
+	// }
+
+	return results, nil
 }
 
 func imageURL(p Post) string {
