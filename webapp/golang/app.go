@@ -518,7 +518,7 @@ func getAccountName(w http.ResponseWriter, r *http.Request) {
 	results := []Post{}
 
 	err = db.Select(&results, `
-    SELECT p.id, p.user_id, p.body, p.mime, p.created_at, u.id, u.account_name
+    SELECT p.id, p.user_id, p.body, p.mime, p.created_at
     FROM posts p
     JOIN users u ON p.user_id = u.id
     WHERE u.id = ?
@@ -614,7 +614,7 @@ func getPosts(w http.ResponseWriter, r *http.Request) {
 
 	results := []Post{}
 	err = db.Select(&results, `
-    SELECT p.id, p.user_id, p.body, p.mime, p.created_at, u.id AS user_id, u.account_name
+    SELECT p.id, p.user_id, p.body, p.mime, p.created_at
     FROM posts p
     JOIN users u ON p.user_id = u.id
     WHERE p.created_at <= ?
@@ -657,14 +657,7 @@ func getPostsID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	results := []Post{}
-	err = db.Select(&results, `
-    SELECT p.*, u.id AS user_id, u.account_name
-    FROM posts p
-    JOIN users u ON p.user_id = u.id
-    WHERE p.id = ?
-	AND u.del_flg = 0
-    LIMIT 20
-`, pid)
+	err = db.Select(&results, "SELECT * FROM `posts` WHERE `id` = ?", pid)
 
 	if err != nil {
 		log.Print(err)
