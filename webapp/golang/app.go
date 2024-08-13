@@ -179,9 +179,9 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 	// POSTのID一覧を作成。
 	var postIds []int
 	var userIds []int
-	for i, result := range results {
-		postIds[i] = result.ID
-		userIds[i] = result.UserID
+	for _, result := range results {
+		postIds = append(postIds, result.ID)
+		userIds = append(userIds, result.UserID)
 	}
 
 	// for _, p := range results {
@@ -221,26 +221,23 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 		return nil, err
 	}
 
+	userMap := make(map[int]User)
+	for _, user := range users {
+		userMap[user.ID] = user
+	}
 	//各ポストに紐づくcommentの数を計測し、ポストのCommentCountに格納する
-	for _, result := range results {
+	for i := range results {
 		//ユーザーとポストの紐づけ処理
-		for _, user := range users {
-			if user.ID == result.UserID {
-				result.User = user
-				break
-			}
+		if user, ok := userMap[results[i].UserID]; ok {
+			results[i].User = user
 		}
 		count := 0
 		var tmpComments []Comment
 		for _, comment := range comments {
-			if comment.PostID == result.ID {
+			if comment.PostID == results[i].ID {
 				//ユーザーとコメントの紐づけ処理
-				for _, user := range users {
-					if user.ID == result.UserID {
-						result.User = user
-						comment.User = user
-						break
-					}
+				if user, ok := userMap[comment.UserID]; ok {
+					comment.User = user
 				}
 				//ポストとコメントの紐づけ準備
 				count++
@@ -260,9 +257,9 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 			}
 		}
 		//ポストとコメントの紐づけ
-		result.CommentCount = count
-		result.Comments = tmpComments
-		result.CSRFToken = csrfToken
+		results[i].CommentCount = count
+		results[i].Comments = tmpComments
+		results[i].CSRFToken = csrfToken
 
 	}
 
