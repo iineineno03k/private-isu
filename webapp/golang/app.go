@@ -657,7 +657,7 @@ func getPostsID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	results := []Post{}
-	err = db.Select(&results, "SELECT * FROM `posts` WHERE `id` = ?", pid)
+	err = db.Select(&results, "SELECT p.id, p.user_id, p.body, p.mime, p.created_at FROM `posts` p WHERE `id` = ?", pid)
 
 	if err != nil {
 		log.Print(err)
