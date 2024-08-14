@@ -716,15 +716,19 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mime := ""
+	ext := ""
 	if file != nil {
 		// 投稿のContent-Typeからファイルのタイプを決定する
 		contentType := header.Header["Content-Type"][0]
 		if strings.Contains(contentType, "jpeg") {
 			mime = "image/jpeg"
+			ext = "jpg"
 		} else if strings.Contains(contentType, "png") {
 			mime = "image/png"
+			ext = "png"
 		} else if strings.Contains(contentType, "gif") {
 			mime = "image/gif"
+			ext = "gif"
 		} else {
 			session := getSession(r)
 			session.Values["notice"] = "投稿できる画像形式はjpgとpngとgifだけです"
@@ -755,7 +759,7 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 		query,
 		me.ID,
 		mime,
-		filedata,
+		[]byte(""),
 		r.FormValue("body"),
 	)
 	if err != nil {
@@ -764,6 +768,20 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	pid, err := result.LastInsertId()
+	if err != nil {
+		log.Print(err)
+		return
+	}
+
+	// write filedata to image file in /public/image
+	f, err := os.Create(fmt.Sprintf("../public/image/%d.%s", pid, ext))
+	if err != nil {
+		log.Print(err)
+		return
+	}
+	defer f.Close()
+
+	_, err = f.Write(filedata)
 	if err != nil {
 		log.Print(err)
 		return
@@ -781,7 +799,7 @@ func getImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	post := Post{}
-	err = db.Get(&post, "SELECT * FROM `posts` WHERE `id` = ?", pid)
+	err = db.Get(&post, "SELECT mime, imgdata FROM `posts` WHERE `id` = ?", pid)
 	if err != nil {
 		log.Print(err)
 		return
@@ -792,8 +810,18 @@ func getImage(w http.ResponseWriter, r *http.Request) {
 	if ext == "jpg" && post.Mime == "image/jpeg" ||
 		ext == "png" && post.Mime == "image/png" ||
 		ext == "gif" && post.Mime == "image/gif" {
+		//TODO: 取得した画像をpublicのところに移動する。
+		//ポスト保存時は、publicのところに格納する。
+
 		w.Header().Set("Content-Type", post.Mime)
-		_, err := w.Write(post.Imgdata)
+		f, err := os.Create(fmt.Sprintf("../public/image/%d.%s", pid, ext))
+		if err != nil {
+			log.Print(err)
+			return
+		}
+		defer f.Close()
+
+		_, err = f.Write(post.Imgdata)
 		if err != nil {
 			log.Print(err)
 			return
