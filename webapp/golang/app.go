@@ -810,8 +810,6 @@ func getImage(w http.ResponseWriter, r *http.Request) {
 	if ext == "jpg" && post.Mime == "image/jpeg" ||
 		ext == "png" && post.Mime == "image/png" ||
 		ext == "gif" && post.Mime == "image/gif" {
-		//TODO: 取得した画像をpublicのところに移動する。
-		//ポスト保存時は、publicのところに格納する。
 
 		w.Header().Set("Content-Type", post.Mime)
 		f, err := os.Create(fmt.Sprintf("../public/image/%d.%s", pid, ext))
