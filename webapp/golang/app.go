@@ -193,7 +193,7 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 	// }
 
 	//INでコメントを取得（コメント）
-	query := "SELECT * FROM `comments` WHERE id IN (?)"
+	query := "SELECT * FROM `comments` WHERE post_id IN (?)"
 	query, args, err := sqlx.In(query, postIds)
 	if err != nil {
 		log.Fatal(err)
