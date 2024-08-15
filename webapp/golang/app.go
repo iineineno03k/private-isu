@@ -26,13 +26,14 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/sessions"
 	"github.com/jmoiron/sqlx"
+	"github.com/patrickmn/go-cache"
 )
 
 var (
 	db           *sqlx.DB
 	store        *gsm.MemcacheStore
-	commentCache map[int][]Comment
-	userCache    map[int]User
+	commentCache *cache.Cache
+	userCache    *cache.Cache
 )
 
 const (
@@ -82,8 +83,24 @@ func init() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 
 	//キャッシュの初期化
-	commentCache = make(map[int][]Comment)
-	userCache = make(map[int]User)
+	commentCache = cache.New(5*time.Minute, 10*time.Minute)
+	userCache = cache.New(5*time.Minute, 10*time.Minute)
+}
+
+func getCommentsFromCache(postID int) ([]Comment, error) {
+	val, found := commentCache.Get(strconv.Itoa(postID))
+	if !found {
+		return nil, fmt.Errorf("no comments found for post ID %d", postID)
+	}
+	return val.([]Comment), nil
+}
+
+func getUserFromCache(userID int) (User, error) {
+	val, found := userCache.Get(strconv.Itoa(userID))
+	if !found {
+		return User{}, fmt.Errorf("no user found with ID %d", userID)
+	}
+	return val.(User), nil
 }
 
 func dbInitialize() {
@@ -182,10 +199,10 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 	var missingUserIDs []int
 
 	for _, result := range results {
-		if _, exists := commentCache[result.ID]; !exists {
+		if _, exists := commentCache.Get(strconv.Itoa(result.ID)); !exists {
 			missingPostIDs = append(missingPostIDs, result.ID)
 		}
-		if _, exists := userCache[result.UserID]; !exists {
+		if _, exists := userCache.Get(strconv.Itoa(result.UserID)); !exists {
 			missingUserIDs = append(missingUserIDs, result.UserID)
 		}
 	}
@@ -204,7 +221,7 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 			return nil, err
 		}
 		for _, user := range users {
-			userCache[user.ID] = user
+			userCache.Set(strconv.Itoa(user.ID), user, cache.DefaultExpiration)
 		}
 	}
 
@@ -223,15 +240,16 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 		}
 		for _, comment := range comments {
 			//コメントとユーザーの紐づけ
-			comment.User = userCache[comment.UserID]
+			comment.User, _ = getUserFromCache(comment.UserID)
 
 			// 既にキャッシュにそのPostIdのエントリーがあるか確認
-			if _, exists := commentCache[comment.PostID]; !exists {
-				// なければ新しいスライスを作成(大体２０くらいって感じに適当に決めた)
-				commentCache[comment.PostID] = make([]Comment, 0)
+			if _, exists := commentCache.Get(strconv.Itoa(comment.PostID)); !exists {
+				// なければ新しいスライスを作成
+				commentCache.Set(strconv.Itoa(comment.PostID), make([]Comment, 0), cache.DefaultExpiration)
 			}
 			// コメントをキャッシュに追加
-			commentCache[comment.PostID] = append(commentCache[comment.PostID], comment)
+			cacheComments, _ := getCommentsFromCache(comment.PostID)
+			commentCache.Set(strconv.Itoa(comment.PostID), append(cacheComments, comment), cache.DefaultExpiration)
 		}
 	}
 
@@ -239,7 +257,7 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 	for i := range results {
 		result := &results[i]
 
-		var originalComments = commentCache[result.ID]
+		var originalComments, _ = getCommentsFromCache(result.ID)
 		var tmpComments = make([]Comment, len(originalComments))
 		copy(tmpComments, originalComments)
 		//コメントを降順にする（DESCの代わり）
@@ -256,7 +274,7 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 		result.CSRFToken = csrfToken
 		result.Comments = tmpComments
 		result.CommentCount = len(originalComments)
-		result.User = userCache[result.UserID]
+		result.User, _ = getUserFromCache(result.UserID)
 	}
 
 	return results, nil
@@ -830,10 +848,13 @@ func postComment(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: time.Now(),
 	}
 	// キャッシュに追加
-	if _, exists := commentCache[postID]; !exists {
-		commentCache[postID] = make([]Comment, 0)
+	if _, exists := commentCache.Get(strconv.Itoa(postID)); !exists {
+		// なければ新しいスライスを作成
+		commentCache.Set(strconv.Itoa(postID), make([]Comment, 0), cache.DefaultExpiration)
 	}
-	commentCache[postID] = append(commentCache[postID], newComment)
+	// コメントをキャッシュに追加
+	cacheComments, _ := getCommentsFromCache(postID)
+	commentCache.Set(strconv.Itoa(postID), append(cacheComments, newComment), cache.DefaultExpiration)
 
 	http.Redirect(w, r, fmt.Sprintf("/posts/%d", postID), http.StatusFound)
 }
