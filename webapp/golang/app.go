@@ -29,8 +29,10 @@ import (
 )
 
 var (
-	db    *sqlx.DB
-	store *gsm.MemcacheStore
+	db           *sqlx.DB
+	store        *gsm.MemcacheStore
+	commentCache map[int][]Comment
+	userCache    map[int]User
 )
 
 const (
@@ -78,6 +80,10 @@ func init() {
 	memcacheClient := memcache.New(memdAddr)
 	store = gsm.NewMemcacheStore(memcacheClient, "iscogram_", []byte("sendagaya"))
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+
+	//キャッシュの初期化
+	commentCache = make(map[int][]Comment)
+	userCache = make(map[int]User)
 }
 
 func dbInitialize() {
@@ -172,127 +178,86 @@ func getFlash(w http.ResponseWriter, r *http.Request, key string) string {
 }
 
 func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, error) {
-	//var posts []Post
-	// POSTのID一覧を作成。
-	var postIds []int
-	var userIds []int
+	var missingPostIDs []int
+	var missingUserIDs []int
+
 	for _, result := range results {
-		postIds = append(postIds, result.ID)
-		userIds = append(userIds, result.UserID)
+		if _, exists := commentCache[result.ID]; !exists {
+			missingPostIDs = append(missingPostIDs, result.ID)
+		}
+		if _, exists := userCache[result.UserID]; !exists {
+			missingUserIDs = append(missingUserIDs, result.UserID)
+		}
 	}
 
-	// for _, p := range results {
-	// err := db.Get(&p.CommentCount, "SELECT COUNT(*) AS `count` FROM `comments` WHERE `post_id` = ?", p.ID)
-	// if err != nil {
-	// 	return nil, err
-	// }
-
-	// query := "SELECT * FROM `comments` WHERE `post_id` = ? ORDER BY `created_at` DESC"
-	// if !allComments {
-	// 	query += " LIMIT 3"
-	// }
-
-	//INでコメントを取得（コメント）
-	query := "SELECT * FROM `comments` WHERE post_id IN (?)"
-	query, args, err := sqlx.In(query, postIds)
-	if err != nil {
-		log.Fatal(err)
-	}
-	query = db.Rebind(query)
-	var comments []Comment
-	err = db.Select(&comments, query, args...)
-	if err != nil {
-		return nil, err
-	}
-
-	//INでコメントを取得（ユーザー）
-	query2 := "SELECT * FROM `users` WHERE id IN (?)"
-	query2, args2, err := sqlx.In(query2, userIds)
-	if err != nil {
-		log.Fatal(err)
-	}
-	query2 = db.Rebind(query2)
+	//ユーザー取得＆キャッシュ保存処理
 	var users []User
-	err = db.Select(&users, query2, args2...)
-	if err != nil {
-		return nil, err
+	if len(missingUserIDs) > 0 {
+		query := "SELECT * FROM `users` WHERE id IN (?)"
+		query, args, err := sqlx.In(query, missingUserIDs)
+		if err != nil {
+			return nil, err
+		}
+		query = db.Rebind(query)
+		err = db.Select(&users, query, args...)
+		if err != nil {
+			return nil, err
+		}
+		for _, user := range users {
+			userCache[user.ID] = user
+		}
 	}
 
-	userMap := make(map[int]User)
-	for _, user := range users {
-		userMap[user.ID] = user
+	//コメント取得＆キャッシュ保存処理
+	var comments []Comment
+	if len(missingPostIDs) > 0 {
+		query := "SELECT * FROM `comments` WHERE post_id IN (?)"
+		query, args, err := sqlx.In(query, missingPostIDs)
+		if err != nil {
+			return nil, err
+		}
+		query = db.Rebind(query)
+		err = db.Select(&comments, query, args...)
+		if err != nil {
+			return nil, err
+		}
+		for _, comment := range comments {
+			//コメントとユーザーの紐づけ
+			comment.User = userCache[comment.UserID]
+
+			// 既にキャッシュにそのPostIdのエントリーがあるか確認
+			if _, exists := commentCache[comment.PostID]; !exists {
+				// なければ新しいスライスを作成(大体２０くらいって感じに適当に決めた)
+				commentCache[comment.PostID] = make([]Comment, 20)
+			}
+			// コメントをキャッシュに追加
+			commentCache[comment.PostID] = append(commentCache[comment.PostID], comment)
+		}
 	}
+
 	//各ポストに紐づくcommentの数を計測し、ポストのCommentCountに格納する
 	for i := range results {
-		//ユーザーとポストの紐づけ処理
-		if user, ok := userMap[results[i].UserID]; ok {
-			results[i].User = user
-		}
-		count := 0
-		var tmpComments []Comment
-		for _, comment := range comments {
-			if comment.PostID == results[i].ID {
-				//ユーザーとコメントの紐づけ処理
-				if user, ok := userMap[comment.UserID]; ok {
-					comment.User = user
-				}
-				//ポストとコメントの紐づけ準備
-				count++
-				tmpComments = append(tmpComments, comment)
-			}
-		}
+		result := &results[i]
 
+		var originalComments = commentCache[result.ID]
+		var tmpComments = make([]Comment, len(originalComments))
+		copy(tmpComments, originalComments)
 		//コメントを降順にする（DESCの代わり）
 		sort.Slice(tmpComments, func(i, j int) bool {
 			return tmpComments[i].CreatedAt.After(tmpComments[j].CreatedAt)
 		})
-
 		//allCommentsがfalseの場合は、postに対応するコメントは3件まで。
 		if !allComments {
 			if len(tmpComments) > 3 {
-				tmpComments = tmpComments[0:3]
+				tmpComments = tmpComments[:3]
 			}
 		}
-		//ポストとコメントの紐づけ
-		results[i].CommentCount = count
-		results[i].Comments = tmpComments
-		results[i].CSRFToken = csrfToken
 
+		result.CSRFToken = csrfToken
+		result.Comments = tmpComments
+		result.CommentCount = len(originalComments)
+		result.User = userCache[result.UserID]
 	}
-
-	// err = db.Select(&comments, query, p.ID)
-	// if err != nil {
-	// 	return nil, err
-	// }
-
-	// for i := 0; i < len(comments); i++ {
-	// 	err := db.Get(&comments[i].User, "SELECT * FROM `users` WHERE `id` = ?", comments[i].UserID)
-	// 	if err != nil {
-	// 		return nil, err
-	// 	}
-	// }
-
-	// // reverse
-	// for i, j := 0, len(comments)-1; i < j; i, j = i+1, j-1 {
-	// 	comments[i], comments[j] = comments[j], comments[i]
-	// }
-
-	// p.Comments = comments
-
-	// err = db.Get(&p.User, "SELECT * FROM `users` WHERE `id` = ?", p.UserID)
-	// if err != nil {
-	// 	return nil, err
-	// }
-
-	// //p.CSRFToken = csrfToken
-
-	// if p.User.DelFlg == 0 {
-	// 	posts = append(posts, p)
-	// }
-	// if len(posts) >= postsPerPage {
-	// 	break
-	// }
-	// }
 
 	return results, nil
 }
@@ -519,7 +484,7 @@ func getAccountName(w http.ResponseWriter, r *http.Request) {
     FROM posts p
     JOIN users u ON p.user_id = u.id
     WHERE u.id = ?
-	AND u.del_flg = 0
+    AND u.del_flg = 0
     ORDER BY p.created_at DESC
     LIMIT 20
 `, user.ID)
@@ -615,7 +580,7 @@ func getPosts(w http.ResponseWriter, r *http.Request) {
     FROM posts p
     JOIN users u ON p.user_id = u.id
     WHERE p.created_at <= ?
-	AND u.del_flg = 0
+    AND u.del_flg = 0
     ORDER BY p.created_at DESC
     LIMIT 20
 `, t.Format(ISO8601Format))
@@ -846,11 +811,29 @@ func postComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query := "INSERT INTO `comments` (`post_id`, `user_id`, `comment`) VALUES (?,?,?)"
-	_, err = db.Exec(query, postID, me.ID, r.FormValue("comment"))
+	result, err := db.Exec(query, postID, me.ID, r.FormValue("comment"))
 	if err != nil {
 		log.Print(err)
 		return
 	}
+	//キャッシュ追加処理
+	commentID, err := result.LastInsertId()
+	if err != nil {
+		log.Print(err)
+		return
+	}
+	newComment := Comment{
+		ID:        int(commentID),
+		PostID:    postID,
+		UserID:    me.ID,
+		Comment:   r.FormValue("comment"),
+		CreatedAt: time.Now(),
+	}
+	// キャッシュに追加
+	if _, exists := commentCache[postID]; !exists {
+		commentCache[postID] = make([]Comment, 20)
+	}
+	commentCache[postID] = append(commentCache[postID], newComment)
 
 	http.Redirect(w, r, fmt.Sprintf("/posts/%d", postID), http.StatusFound)
 }
