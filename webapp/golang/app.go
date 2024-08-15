@@ -228,7 +228,7 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 			// 既にキャッシュにそのPostIdのエントリーがあるか確認
 			if _, exists := commentCache[comment.PostID]; !exists {
 				// なければ新しいスライスを作成(大体２０くらいって感じに適当に決めた)
-				commentCache[comment.PostID] = make([]Comment, 20)
+				commentCache[comment.PostID] = make([]Comment, 0)
 			}
 			// コメントをキャッシュに追加
 			commentCache[comment.PostID] = append(commentCache[comment.PostID], comment)
@@ -831,7 +831,7 @@ func postComment(w http.ResponseWriter, r *http.Request) {
 	}
 	// キャッシュに追加
 	if _, exists := commentCache[postID]; !exists {
-		commentCache[postID] = make([]Comment, 20)
+		commentCache[postID] = make([]Comment, 0)
 	}
 	commentCache[postID] = append(commentCache[postID], newComment)
 
